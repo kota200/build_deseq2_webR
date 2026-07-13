@@ -120,14 +120,31 @@ jobs:
               Rscript /work/build-deseq2.R
             '
 
-      - name: Inspect filesystem image
-        run: |
-          echo "Generated files:"
+            - name: Inspect filesystem image
+              run: |
+                echo "Generated files:"
+                find wasm-library \
+                  -maxdepth 1 \
+                  -type f \
+                  -printf '%f %s bytes\n'
 
-          find wasm-library \
-            -maxdepth 1 \
-            -type f \
-            -printf '%f %s bytes\n'
+                echo
+                echo "Checking locfit:"
+                find wasm-repo \
+                  -type f \
+                  -name 'locfit_*.tgz' \
+                  -printf '%p\n'
+
+                test -n "$(
+                  find wasm-repo \
+                    -type f \
+                    -name 'locfit_*.tgz' \
+                    -print \
+                    -quit
+                )" || {
+                  echo "ERROR: locfit was not built"
+                  exit 1
+                }
 
           echo
           echo "Built packages:"
