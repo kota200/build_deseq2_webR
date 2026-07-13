@@ -15,16 +15,91 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Build DESeq2 for webR
-        uses: r-wasm/actions/build-rwasm@v3
-        with:
-          packages: |
-            bioc::DESeq2
-          image-path: wasm-library
-          repo-path: wasm-repo
-          strip: "demo, doc, examples, help, html, include, tests, vignette"
-          webr-image: ghcr.io/r-wasm/webr:main
-          compress: true
+      - name: Create R build script
+        run: |
+          cat > build-deseq2.R <<'RSCRIPT'
+          repo_dir <- "/work/wasm-repo"
+          image_dir <- "/work/wasm-library"
+
+          dir.create(
+            repo_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          dir.create(
+            image_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          message(
+            "Building DESeq2 and hard dependencies..."
+          )
+
+          rwasm::add_pkg(
+            packages = "bioc::DESeq2",
+            repo_dir = repo_dir,
+            dependencies = NA,
+            compress = TRUE
+          )
+
+          message(
+            "Creating filesystem image..."
+          )
+
+          rwasm::make_vfs_library(
+            out_dir = image_dir,
+            out_name = "library.data",
+            repo_dir = repo_dir,
+            compress = TRUE,
+            strip = c(
+              "demo",
+              "doc",
+              "examples",
+              "help",
+              "html",
+              "include",
+              "tests",
+              "vignette"
+            )
+          )
+
+          message(
+            "Filesystem image files:"
+          )
+
+          print(
+            list.files(
+              image_dir,
+              full.names = TRUE
+            )
+          )
+          RSCRIPT
+
+      - name: Build DESeq2 and dependencies
+        run: |
+          docker run --rm \
+            -e GITHUB_TOKEN="${{ github.token }}" \
+            -e GITHUB_PAT="${{ github.token }}" \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -w /work \
+            ghcr.io/r-wasm/webr:main \
+            Rscript /work/build-deseq2.R
+
+      - name: Inspect filesystem image
+        run: |
+          echo "Generated files:"
+          find wasm-library -maxdepth 1 -type f \
+            -printf '%f %s bytes\n'
+
+          echo
+          echo "Built packages:"
+          find wasm-repo/bin/emscripten/contrib \
+            -type f \
+            -name '*.tgz' \
+            -printf '%f\n' \
+            | sort
 
       - name: Upload filesystem image
         uses: actions/upload-artifact@v6
