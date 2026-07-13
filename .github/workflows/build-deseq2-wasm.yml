@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Build DESeq2 for webR 0.6.0
+      - name: Build DESeq2 for webR
         uses: r-wasm/actions/build-rwasm@v3
         with:
           packages: |
@@ -23,7 +23,7 @@ jobs:
           image-path: wasm-library
           repo-path: wasm-repo
           strip: "demo, doc, examples, help, html, include, tests, vignette"
-          webr-image: ghcr.io/r-wasm/webr:v0.6.0
+          webr-image: ghcr.io/r-wasm/webr:main
           compress: true
 
       - name: Upload filesystem image
