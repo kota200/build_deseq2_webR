@@ -1,0 +1,249 @@
+run_browser_deseq2 <- function(
+  counts_path,
+  metadata_path,
+  condition_column,
+  control_level,
+  treatment_level,
+  alpha = 0.05,
+  sf_type = "ratio",
+  fit_type = "parametric",
+  results_path,
+  normalized_path
+) {
+  allowed_sf <- c(
+    "ratio",
+    "poscounts",
+    "iterate"
+  )
+
+  allowed_fit <- c(
+    "parametric",
+    "local",
+    "mean"
+  )
+
+  if (!sf_type %in% allowed_sf) {
+    stop("Unsupported sf_type: ", sf_type)
+  }
+
+  if (!fit_type %in% allowed_fit) {
+    stop("Unsupported fit_type: ", fit_type)
+  }
+
+  if (identical(control_level, treatment_level)) {
+    stop(
+      "Control and treatment levels must be different."
+    )
+  }
+
+  counts_df <- utils::read.csv(
+    counts_path,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  metadata <- utils::read.csv(
+    metadata_path,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  if (ncol(counts_df) < 3L) {
+    stop(
+      "Count matrix requires one gene ID column and at least two sample columns."
+    )
+  }
+
+  if (!"sample" %in% colnames(metadata)) {
+    stop(
+      "Metadata requires a column named 'sample'."
+    )
+  }
+
+  if (!condition_column %in% colnames(metadata)) {
+    stop(
+      "Condition column not found: ",
+      condition_column
+    )
+  }
+
+  gene_id <- as.character(counts_df[[1L]])
+
+  if (
+    anyNA(gene_id) ||
+    any(gene_id == "")
+  ) {
+    stop("Gene IDs must not be empty.")
+  }
+
+  if (anyDuplicated(gene_id)) {
+    stop("Gene IDs must be unique.")
+  }
+
+  count_df_only <- counts_df[
+    ,
+    -1L,
+    drop = FALSE
+  ]
+
+  sample_names <- colnames(count_df_only)
+
+  if (anyDuplicated(sample_names)) {
+    stop(
+      "Count matrix sample names must be unique."
+    )
+  }
+
+  if (anyDuplicated(metadata$sample)) {
+    stop(
+      "Metadata sample names must be unique."
+    )
+  }
+
+  if (!setequal(sample_names, metadata$sample)) {
+    stop(
+      "Sample names in counts.csv and samples.csv do not match."
+    )
+  }
+
+  metadata <- metadata[
+    match(sample_names, metadata$sample),
+    ,
+    drop = FALSE
+  ]
+
+  rownames(metadata) <- metadata$sample
+
+  numeric_counts <- lapply(
+    count_df_only,
+    function(column) {
+      suppressWarnings(as.numeric(column))
+    }
+  )
+
+  count_matrix <- do.call(
+    cbind,
+    numeric_counts
+  )
+
+  dimnames(count_matrix) <- list(
+    gene_id,
+    sample_names
+  )
+
+  if (
+    anyNA(count_matrix) ||
+    any(!is.finite(count_matrix))
+  ) {
+    stop(
+      "All count values must be finite numbers."
+    )
+  }
+
+  if (any(count_matrix < 0)) {
+    stop(
+      "Count values must be non-negative."
+    )
+  }
+
+  if (
+    any(
+      abs(count_matrix - round(count_matrix)) >
+        .Machine$double.eps^0.5
+    )
+  ) {
+    stop(
+      "DESeq2 requires integer count values."
+    )
+  }
+
+  storage.mode(count_matrix) <- "integer"
+
+  condition_values <- as.character(
+    metadata[[condition_column]]
+  )
+
+  observed_levels <- unique(
+    condition_values
+  )
+
+  if (!control_level %in% observed_levels) {
+    stop(
+      "Control level not found: ",
+      control_level
+    )
+  }
+
+  if (!treatment_level %in% observed_levels) {
+    stop(
+      "Treatment level not found: ",
+      treatment_level
+    )
+  }
+
+  metadata[[condition_column]] <- stats::relevel(
+    factor(condition_values),
+    ref = control_level
+  )
+
+  design_formula <- stats::reformulate(
+    condition_column
+  )
+
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = count_matrix,
+    colData = metadata,
+    design = design_formula
+  )
+
+  dds <- DESeq2::DESeq(
+    dds,
+    test = "Wald",
+    sfType = sf_type,
+    fitType = fit_type,
+    quiet = TRUE
+  )
+
+  result <- DESeq2::results(
+    dds,
+    contrast = c(
+      condition_column,
+      treatment_level,
+      control_level
+    ),
+    alpha = alpha
+  )
+
+  result_df <- data.frame(
+    gene_id = rownames(result),
+    as.data.frame(result),
+    check.names = FALSE
+  )
+
+  normalized <- DESeq2::counts(
+    dds,
+    normalized = TRUE
+  )
+
+  normalized_df <- data.frame(
+    gene_id = rownames(normalized),
+    normalized,
+    check.names = FALSE
+  )
+
+  utils::write.csv(
+    result_df,
+    results_path,
+    row.names = FALSE,
+    na = ""
+  )
+
+  utils::write.csv(
+    normalized_df,
+    normalized_path,
+    row.names = FALSE,
+    na = ""
+  )
+
+  invisible(TRUE)
+}
