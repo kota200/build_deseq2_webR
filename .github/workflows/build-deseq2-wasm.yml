@@ -12,8 +12,12 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Upload filesystem image
+        uses: actions/upload-artifact@v6
+        with:
+          name: deseq2-webr-library
+          path: wasm-library/
+          if-no-files-found: error
 
       - name: Build DESeq2 for webR 0.6.0
         uses: r-wasm/actions/build-rwasm@v3
