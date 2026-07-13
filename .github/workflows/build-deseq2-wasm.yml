@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Create R build script
+      - name: Create build scripts
         run: |
           cat > build-deseq2.R <<'RSCRIPT'
           repo_dir <- "/work/wasm-repo"
@@ -39,23 +39,72 @@ jobs:
             showWarnings = FALSE
           )
 
-          message(
-            "Building DESeq2, locfit, and dependencies..."
-          )
+          message("Building locfit...")
 
           rwasm::add_pkg(
-            packages = c(
-              "locfit",
-              "bioc::DESeq2"
-            ),
+            packages = "locfit",
             repo_dir = repo_dir,
             dependencies = NA,
             compress = TRUE
           )
 
-          message(
-            "Creating filesystem image..."
+          locfit_files <- list.files(
+            repo_dir,
+            pattern = "^locfit_.*\\.tgz$",
+            recursive = TRUE,
+            full.names = TRUE
           )
+
+          if (length(locfit_files) == 0L) {
+            stop(
+              "locfit was not built. ",
+              "Aborting filesystem image creation."
+            )
+          }
+
+          message("Built locfit:")
+          print(locfit_files)
+
+          message(
+            "Building DESeq2 and hard dependencies..."
+          )
+
+          rwasm::add_pkg(
+            packages = "bioc::DESeq2",
+            repo_dir = repo_dir,
+            dependencies = NA,
+            compress = TRUE
+          )
+
+          deseq2_files <- list.files(
+            repo_dir,
+            pattern = "^DESeq2_.*\\.tgz$",
+            recursive = TRUE,
+            full.names = TRUE
+          )
+
+          if (length(deseq2_files) == 0L) {
+            stop(
+              "DESeq2 was not built. ",
+              "Aborting filesystem image creation."
+            )
+          }
+
+          message("Built DESeq2:")
+          print(deseq2_files)
+
+          message("All built packages:")
+
+          built_packages <- list.files(
+            repo_dir,
+            pattern = "\\.tgz$",
+            recursive = TRUE,
+            full.names = FALSE
+          )
+
+          print(sort(built_packages))
+
+          message("Creating filesystem image...")
 
           rwasm::make_vfs_library(
             out_dir = image_dir,
@@ -74,15 +123,86 @@ jobs:
             )
           )
 
-          message("Filesystem image files:")
-
-          print(
-            list.files(
-              image_dir,
-              full.names = TRUE
-            )
+          image_files <- list.files(
+            image_dir,
+            full.names = TRUE
           )
+
+          message("Filesystem image files:")
+          print(image_files)
+
+          if (
+            !file.exists(
+              file.path(
+                image_dir,
+                "library.data.gz"
+              )
+            )
+          ) {
+            stop(
+              "library.data.gz was not created."
+            )
+          }
+
+          if (
+            !file.exists(
+              file.path(
+                image_dir,
+                "library.js.metadata"
+              )
+            )
+          ) {
+            stop(
+              "library.js.metadata was not created."
+            )
+          }
           RSCRIPT
+
+          cat > run-build.sh <<'BUILDSCRIPT'
+          #!/usr/bin/env bash
+
+          set -euo pipefail
+
+          echo "Installing patched pkgdepends..."
+
+          R -q -e '
+            pak::pak(
+              "r-lib/pkgdepends@v0.9.0-patched",
+              lib = .Library,
+              ask = FALSE
+            )
+          '
+
+          echo "Build environment:"
+
+          R -q -e '
+            cat(
+              "R: ",
+              R.version.string,
+              "\n"
+            )
+
+            cat(
+              "rwasm: ",
+              as.character(
+                packageVersion("rwasm")
+              ),
+              "\n"
+            )
+
+            cat(
+              "pkgdepends: ",
+              as.character(
+                packageVersion("pkgdepends")
+              ),
+              "\n"
+            )
+          '
+
+          Rscript /work/build-deseq2.R
+          BUILDSCRIPT
+
+          chmod +x run-build.sh
 
       - name: Build DESeq2 and dependencies
         run: |
@@ -93,84 +213,67 @@ jobs:
             -v "${GITHUB_WORKSPACE}:/work" \
             -w /work \
             ghcr.io/r-wasm/webr:v0.6.0 \
-            -lc '
-              set -euo pipefail
+            /work/run-build.sh
 
-              R -q -e '"'"'
-                pak::pak(
-                  "r-lib/pkgdepends@v0.9.0-patched",
-                  lib = .Library
-                )
-              '"'"'
+      - name: Inspect built packages
+        run: |
+          set -euo pipefail
 
-              R -q -e '"'"'
-                cat(R.version.string, "\n")
-                cat(
-                  "rwasm: ",
-                  as.character(packageVersion("rwasm")),
-                  "\n"
-                )
-                cat(
-                  "pkgdepends: ",
-                  as.character(packageVersion("pkgdepends")),
-                  "\n"
-                )
-              '"'"'
+          echo "Generated image files:"
 
-              Rscript /work/build-deseq2.R
-            '
-
-            - name: Inspect filesystem image
-              run: |
-                echo "Generated files:"
-                find wasm-library \
-                  -maxdepth 1 \
-                  -type f \
-                  -printf '%f %s bytes\n'
-
-                echo
-                echo "Checking locfit:"
-                find wasm-repo \
-                  -type f \
-                  -name 'locfit_*.tgz' \
-                  -printf '%p\n'
-
-                test -n "$(
-                  find wasm-repo \
-                    -type f \
-                    -name 'locfit_*.tgz' \
-                    -print \
-                    -quit
-                )" || {
-                  echo "ERROR: locfit was not built"
-                  exit 1
-                }
+          find wasm-library \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f %s bytes\n'
 
           echo
           echo "Built packages:"
 
-          find wasm-repo/bin/emscripten/contrib \
+          find wasm-repo \
             -type f \
             -name '*.tgz' \
             -printf '%f\n' \
             | sort
 
           echo
-          echo "Checking essential packages:"
+          echo "Checking locfit:"
 
-          find wasm-repo/bin/emscripten/contrib \
-            -type f \
-            \( \
+          LOCFIT_FILE="$(
+            find wasm-repo \
+              -type f \
+              -name 'locfit_*.tgz' \
+              -print \
+              -quit
+          )"
+
+          if [ -z "${LOCFIT_FILE}" ]; then
+            echo "ERROR: locfit was not built"
+            exit 1
+          fi
+
+          echo "Found: ${LOCFIT_FILE}"
+
+          echo
+          echo "Checking DESeq2:"
+
+          DESEQ2_FILE="$(
+            find wasm-repo \
+              -type f \
               -name 'DESeq2_*.tgz' \
-              -o -name 'locfit_*.tgz' \
-              -o -name 'Rcpp_*.tgz' \
-              -o -name 'RcppArmadillo_*.tgz' \
-            \) \
-            -printf '%f\n'
+              -print \
+              -quit
+          )"
+
+          if [ -z "${DESEQ2_FILE}" ]; then
+            echo "ERROR: DESeq2 was not built"
+            exit 1
+          fi
+
+          echo "Found: ${DESEQ2_FILE}"
 
       - name: Upload filesystem image
         uses: actions/upload-artifact@v6
         with:
-          name: deseq2-webr-library-${{ github.run_attempt }}
+          name: deseq2-webr-library-${{ github.run_id }}-${{ github.run_attempt }}
           path: wasm-library/
           if-no-files-found: error
