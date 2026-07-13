@@ -106,14 +106,6 @@ jobs:
             -name 'locfit_*.tgz' \
             -print
 
-      - name: Upload filesystem image
-        uses: actions/upload-artifact@v6
-        with:
-          name: deseq2-webr-library
-          path: wasm-library/
-          if-no-files-found: error
-          overwrite: true
-
       - name: Inspect filesystem image
         run: |
           echo "Generated files:"
@@ -134,3 +126,4 @@ jobs:
           name: deseq2-webr-library
           path: wasm-library/
           if-no-files-found: error
+          overwrite: true
