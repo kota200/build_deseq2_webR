@@ -1,0 +1,34 @@
+name: Build DESeq2 webR library
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build DESeq2 for webR 0.6.0
+        uses: r-wasm/actions/build-rwasm@v3
+        with:
+          packages: |
+            bioc::DESeq2
+          image-path: wasm-library
+          repo-path: wasm-repo
+          strip: "demo, doc, examples, help, html, include, tests, vignette"
+          webr-image: ghcr.io/r-wasm/webr:v0.6.0
+          compress: true
+
+      - name: Upload filesystem image
+        uses: actions/upload-artifact@v4
+        with:
+          name: deseq2-webr-library
+          path: wasm-library/
+          if-no-files-found: error
