@@ -21,6 +21,12 @@ jobs:
           repo_dir <- "/work/wasm-repo"
           image_dir <- "/work/wasm-library"
 
+          unlink(
+            c(repo_dir, image_dir),
+            recursive = TRUE,
+            force = TRUE
+          )
+
           dir.create(
             repo_dir,
             recursive = TRUE,
@@ -81,49 +87,73 @@ jobs:
       - name: Build DESeq2 and dependencies
         run: |
           docker run --rm \
+            --entrypoint /bin/bash \
             -e GITHUB_TOKEN="${{ github.token }}" \
             -e GITHUB_PAT="${{ github.token }}" \
             -v "${GITHUB_WORKSPACE}:/work" \
             -w /work \
-            ghcr.io/r-wasm/webr:main \
-            Rscript /work/build-deseq2.R
+            ghcr.io/r-wasm/webr:v0.6.0 \
+            -lc '
+              set -euo pipefail
 
-      - name: Inspect built packages
-        run: |
-          echo "Built packages:"
+              R -q -e '"'"'
+                pak::pak(
+                  "r-lib/pkgdepends@v0.9.0-patched",
+                  lib = .Library
+                )
+              '"'"'
 
-          find wasm-repo/bin/emscripten/contrib \
-            -type f \
-            -name '*.tgz' \
-            -printf '%f\n' \
-            | sort
+              R -q -e '"'"'
+                cat(R.version.string, "\n")
+                cat(
+                  "rwasm: ",
+                  as.character(packageVersion("rwasm")),
+                  "\n"
+                )
+                cat(
+                  "pkgdepends: ",
+                  as.character(packageVersion("pkgdepends")),
+                  "\n"
+                )
+              '"'"'
 
-          echo
-          echo "Checking locfit:"
-
-          find wasm-repo/bin/emscripten/contrib \
-            -type f \
-            -name 'locfit_*.tgz' \
-            -print
+              Rscript /work/build-deseq2.R
+            '
 
       - name: Inspect filesystem image
         run: |
           echo "Generated files:"
-          find wasm-library -maxdepth 1 -type f \
+
+          find wasm-library \
+            -maxdepth 1 \
+            -type f \
             -printf '%f %s bytes\n'
 
           echo
           echo "Built packages:"
+
           find wasm-repo/bin/emscripten/contrib \
             -type f \
             -name '*.tgz' \
             -printf '%f\n' \
             | sort
 
+          echo
+          echo "Checking essential packages:"
+
+          find wasm-repo/bin/emscripten/contrib \
+            -type f \
+            \( \
+              -name 'DESeq2_*.tgz' \
+              -o -name 'locfit_*.tgz' \
+              -o -name 'Rcpp_*.tgz' \
+              -o -name 'RcppArmadillo_*.tgz' \
+            \) \
+            -printf '%f\n'
+
       - name: Upload filesystem image
         uses: actions/upload-artifact@v6
         with:
-          name: deseq2-webr-library
+          name: deseq2-webr-library-${{ github.run_attempt }}
           path: wasm-library/
           if-no-files-found: error
-          overwrite: true
