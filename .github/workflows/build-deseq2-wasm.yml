@@ -112,6 +112,7 @@ jobs:
           name: deseq2-webr-library
           path: wasm-library/
           if-no-files-found: error
+          overwrite: true
 
       - name: Inspect filesystem image
         run: |
