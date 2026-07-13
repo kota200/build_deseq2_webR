@@ -34,11 +34,14 @@ jobs:
           )
 
           message(
-            "Building DESeq2 and hard dependencies..."
+            "Building DESeq2, locfit, and dependencies..."
           )
 
           rwasm::add_pkg(
-            packages = "bioc::DESeq2",
+            packages = c(
+              "locfit",
+              "bioc::DESeq2"
+            ),
             repo_dir = repo_dir,
             dependencies = NA,
             compress = TRUE
@@ -65,9 +68,7 @@ jobs:
             )
           )
 
-          message(
-            "Filesystem image files:"
-          )
+          message("Filesystem image files:")
 
           print(
             list.files(
@@ -86,6 +87,31 @@ jobs:
             -w /work \
             ghcr.io/r-wasm/webr:main \
             Rscript /work/build-deseq2.R
+
+      - name: Inspect built packages
+        run: |
+          echo "Built packages:"
+
+          find wasm-repo/bin/emscripten/contrib \
+            -type f \
+            -name '*.tgz' \
+            -printf '%f\n' \
+            | sort
+
+          echo
+          echo "Checking locfit:"
+
+          find wasm-repo/bin/emscripten/contrib \
+            -type f \
+            -name 'locfit_*.tgz' \
+            -print
+
+      - name: Upload filesystem image
+        uses: actions/upload-artifact@v6
+        with:
+          name: deseq2-webr-library
+          path: wasm-library/
+          if-no-files-found: error
 
       - name: Inspect filesystem image
         run: |
