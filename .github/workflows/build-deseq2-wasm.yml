@@ -476,8 +476,6 @@ jobs:
 
           shim_binary <- shim_binaries[[1]]
 
-          # リゾルバが通常版BiocParallelも作った場合は削除する。
-
           all_biocparallel_binaries <-
             built_packages[
               grepl(
@@ -724,8 +722,6 @@ jobs:
             )
           }
 
-          # BiocParallel binaryがshimの1つだけであることを確認。
-
           final_biocparallel_binaries <-
             built_packages[
               grepl(
@@ -943,11 +939,9 @@ jobs:
             -printf '%f %s bytes\n' \
             | sort
 
-          test -s \
-            wasm-library/library.data.gz
-
-          test -s \
-            wasm-library/library.js.metadata
+          test -s wasm-library/library.data.gz
+          test -s wasm-library/library.js.metadata
+          test -s wasm-library/build-info.txt
 
           echo
           echo "Built package binaries:"
@@ -967,82 +961,56 @@ jobs:
               -name 'BiocParallel_*.tgz'
           )
 
-          if [
-            "${#BIOCPARALLEL_FILES[@]}" -ne 1
-          ]; then
-            echo \
-              "ERROR: expected exactly one BiocParallel binary"
-
-            printf \
-              '%s\n' \
-              "${BIOCPARALLEL_FILES[@]}"
-
+          if [ "${#BIOCPARALLEL_FILES[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one BiocParallel binary"
+            printf '%s\n' "${BIOCPARALLEL_FILES[@]}"
             exit 1
           fi
 
-          BIOCPARALLEL_FILE="${
-            BIOCPARALLEL_FILES[0]
-          }"
+          BIOCPARALLEL_FILE="${BIOCPARALLEL_FILES[0]}"
 
-          echo \
-            "Found: ${BIOCPARALLEL_FILE}"
+          echo "Found: ${BIOCPARALLEL_FILE}"
 
-          case "${
-            BIOCPARALLEL_FILE
-          }" in
+          case "${BIOCPARALLEL_FILE}" in
             *BiocParallel_1.46.0.9001.tgz)
+              echo "OK: serial-only BiocParallel shim detected"
               ;;
             *)
-              echo \
-                "ERROR: BiocParallel binary is not the serial shim"
-
+              echo "ERROR: BiocParallel binary is not the serial-only shim"
               exit 1
               ;;
           esac
 
-          if \
-            tar -tzf \
-              "${BIOCPARALLEL_FILE}" \
-              | grep -q '^BiocParallel/libs/'
+          if tar -tzf "${BIOCPARALLEL_FILE}" \
+            | grep -q '^BiocParallel/libs/'
           then
-            echo \
-              "ERROR: BiocParallel shim contains native libraries"
-
+            echo "ERROR: BiocParallel shim contains native libraries"
             exit 1
           fi
 
-          echo \
-            "OK: no BiocParallel native libraries"
+          echo "OK: no BiocParallel native libraries"
 
-          if \
-            tar -xOzf \
-              "${BIOCPARALLEL_FILE}" \
-              BiocParallel/NAMESPACE \
-              | grep -q 'useDynLib'
+          if tar -xOzf \
+            "${BIOCPARALLEL_FILE}" \
+            BiocParallel/NAMESPACE \
+            | grep -q 'useDynLib'
           then
-            echo \
-              "ERROR: BiocParallel shim contains useDynLib"
-
+            echo "ERROR: BiocParallel shim contains useDynLib"
             exit 1
           fi
 
-          echo \
-            "OK: no useDynLib entry"
+          echo "OK: no useDynLib entry"
 
-          if ! \
-            tar -xOzf \
-              "${BIOCPARALLEL_FILE}" \
-              BiocParallel/DESCRIPTION \
-              | grep -q '^NeedsCompilation: no$'
+          if ! tar -xOzf \
+            "${BIOCPARALLEL_FILE}" \
+            BiocParallel/DESCRIPTION \
+            | grep -q '^NeedsCompilation: no$'
           then
-            echo \
-              "ERROR: BiocParallel shim is not pure R"
-
+            echo "ERROR: BiocParallel shim is not pure R"
             exit 1
           fi
 
-          echo \
-            "OK: NeedsCompilation is no"
+          echo "OK: NeedsCompilation is no"
 
           echo
           echo "Checking DESeq2:"
@@ -1055,17 +1023,12 @@ jobs:
               -quit
           )"
 
-          if [
-            -z "${DESEQ2_FILE}"
-          ]; then
-            echo \
-              "ERROR: DESeq2 was not built"
-
+          if [ -z "${DESEQ2_FILE}" ]; then
+            echo "ERROR: DESeq2 was not built"
             exit 1
           fi
 
-          echo \
-            "Found: ${DESEQ2_FILE}"
+          echo "Found: ${DESEQ2_FILE}"
 
           echo
           echo "Checking locfit:"
@@ -1078,23 +1041,26 @@ jobs:
               -quit
           )"
 
-          if [
-            -z "${LOCFIT_FILE}"
-          ]; then
-            echo \
-              "ERROR: locfit was not built"
-
+          if [ -z "${LOCFIT_FILE}" ]; then
+            echo "ERROR: locfit was not built"
             exit 1
           fi
 
-          echo \
-            "Found: ${LOCFIT_FILE}"
+          echo "Found: ${LOCFIT_FILE}"
+
+          echo
+          echo "Checking filesystem image:"
+
+          echo "Found: wasm-library/library.data.gz"
+          echo "Found: wasm-library/library.js.metadata"
 
           echo
           echo "Build information:"
 
-          cat \
-            wasm-library/build-info.txt
+          cat wasm-library/build-info.txt
+
+          echo
+          echo "All checks passed."
 
       - name: Upload filesystem image
         uses: actions/upload-artifact@v6
