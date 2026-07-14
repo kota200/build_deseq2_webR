@@ -10,19 +10,26 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
       - name: Create R build script
+        shell: bash
         run: |
           cat > build-deseq2.R <<'RSCRIPT'
           repo_dir <- "/work/wasm-repo"
           image_dir <- "/work/wasm-library"
+          patch_dir <- "/work/biocparallel-patch"
 
           unlink(
-            c(repo_dir, image_dir),
+            c(
+              repo_dir,
+              image_dir,
+              patch_dir
+            ),
             recursive = TRUE,
             force = TRUE
           )
@@ -39,8 +46,49 @@ jobs:
             showWarnings = FALSE
           )
 
+          dir.create(
+            patch_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          find_package_binary <- function(
+            package_name
+          ) {
+            pattern <- paste0(
+              "^",
+              package_name,
+              "_.*\\.tgz$"
+            )
+
+            package_files <- list.files(
+              repo_dir,
+              pattern = pattern,
+              recursive = TRUE,
+              full.names = TRUE
+            )
+
+            if (
+              length(package_files) != 1L
+            ) {
+              stop(
+                "Expected exactly one binary for ",
+                package_name,
+                ", but found ",
+                length(package_files),
+                ":\n",
+                paste(
+                  package_files,
+                  collapse = "\n"
+                )
+              )
+            }
+
+            package_files[[1]]
+          }
+
           # --------------------------------------------------
-          # locfit用のC17コンパイラ設定をrwasmへ追加
+          # 1. locfit用のC17コンパイラ設定
           # --------------------------------------------------
 
           webr_vars <- system.file(
@@ -57,26 +105,41 @@ jobs:
             )
           }
 
-          current_makevars <- readLines(
+          makevars_lines <- readLines(
             webr_vars,
             warn = FALSE
           )
 
-          if (
-            !any(
-              grepl(
-                "^CC17[[:space:]]*=",
-                current_makevars
-              )
+          has_cc17 <- any(
+            grepl(
+              "^[[:space:]]*CC17[[:space:]]*=",
+              makevars_lines
             )
-          ) {
+          )
+
+          has_c17flags <- any(
+            grepl(
+              "^[[:space:]]*C17FLAGS[[:space:]]*=",
+              makevars_lines
+            )
+          )
+
+          if (!has_cc17) {
             cat(
               c(
                 "",
                 "# Added for locfit C17 compilation",
-                "CC17 = emcc",
-                "C17FLAGS = -std=gnu17 $(WASM_COMMON_FLAGS)"
+                "CC17 = emcc"
               ),
+              file = webr_vars,
+              sep = "\n",
+              append = TRUE
+            )
+          }
+
+          if (!has_c17flags) {
+            cat(
+              "C17FLAGS = -std=gnu17 $(WASM_COMMON_FLAGS)",
               file = webr_vars,
               sep = "\n",
               append = TRUE
@@ -89,23 +152,21 @@ jobs:
           )
 
           message(
-            "Last lines of patched Makevars:"
-          )
-
-          patched_makevars <- readLines(
-            webr_vars,
-            warn = FALSE
+            "Last lines of webR Makevars:"
           )
 
           print(
             tail(
-              patched_makevars,
-              10
+              readLines(
+                webr_vars,
+                warn = FALSE
+              ),
+              15
             )
           )
 
           # --------------------------------------------------
-          # DESeq2、locfit、ハード依存関係をビルド
+          # 2. DESeq2、locfit、依存関係をビルド
           # --------------------------------------------------
 
           message(
@@ -122,8 +183,496 @@ jobs:
             compress = TRUE
           )
 
+          locfit_binary <- find_package_binary(
+            "locfit"
+          )
+
+          deseq2_binary <- find_package_binary(
+            "DESeq2"
+          )
+
+          biocparallel_binary <-
+            find_package_binary(
+              "BiocParallel"
+            )
+
+          message(
+            "Confirmed locfit binary: ",
+            locfit_binary
+          )
+
+          message(
+            "Confirmed DESeq2 binary: ",
+            deseq2_binary
+          )
+
+          message(
+            "Original BiocParallel binary: ",
+            biocparallel_binary
+          )
+
           # --------------------------------------------------
-          # ビルド結果を確認
+          # 3. BiocParallel binaryを展開
+          # --------------------------------------------------
+
+          extraction_dir <- file.path(
+            patch_dir,
+            "extracted"
+          )
+
+          dir.create(
+            extraction_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          utils::untar(
+            biocparallel_binary,
+            exdir = extraction_dir
+          )
+
+          biocparallel_package_dir <-
+            file.path(
+              extraction_dir,
+              "BiocParallel"
+            )
+
+          if (
+            !dir.exists(
+              biocparallel_package_dir
+            )
+          ) {
+            stop(
+              "BiocParallel binaryを展開できませんでした。\n",
+              "Expected directory: ",
+              biocparallel_package_dir
+            )
+          }
+
+          description_path <- file.path(
+            biocparallel_package_dir,
+            "DESCRIPTION"
+          )
+
+          namespace_path <- file.path(
+            biocparallel_package_dir,
+            "NAMESPACE"
+          )
+
+          nsinfo_path <- file.path(
+            biocparallel_package_dir,
+            "Meta",
+            "nsInfo.rds"
+          )
+
+          libs_path <- file.path(
+            biocparallel_package_dir,
+            "libs"
+          )
+
+          required_paths <- c(
+            description_path,
+            namespace_path,
+            nsinfo_path
+          )
+
+          missing_paths <- required_paths[
+            !file.exists(
+              required_paths
+            )
+          ]
+
+          if (
+            length(missing_paths) > 0L
+          ) {
+            stop(
+              "BiocParallel binaryに必要なファイルがありません:\n",
+              paste(
+                missing_paths,
+                collapse = "\n"
+              )
+            )
+          }
+
+          description_data <- read.dcf(
+            description_path
+          )
+
+          biocparallel_version <-
+            unname(
+              description_data[
+                1,
+                "Version"
+              ]
+            )
+
+          message(
+            "BiocParallel version: ",
+            biocparallel_version
+          )
+
+          # --------------------------------------------------
+          # 4. NAMESPACEからuseDynLibを削除
+          # --------------------------------------------------
+
+          namespace_lines <- readLines(
+            namespace_path,
+            warn = FALSE
+          )
+
+          original_dynlib_lines <-
+            grep(
+              "^[[:space:]]*useDynLib[[:space:]]*\\(",
+              namespace_lines,
+              value = TRUE
+            )
+
+          message(
+            "Original useDynLib entries:"
+          )
+
+          print(
+            original_dynlib_lines
+          )
+
+          namespace_lines <- namespace_lines[
+            !grepl(
+              "^[[:space:]]*useDynLib[[:space:]]*\\(",
+              namespace_lines
+            )
+          ]
+
+          writeLines(
+            namespace_lines,
+            namespace_path
+          )
+
+          if (
+            any(
+              grepl(
+                "^[[:space:]]*useDynLib[[:space:]]*\\(",
+                readLines(
+                  namespace_path,
+                  warn = FALSE
+                )
+              )
+            )
+          ) {
+            stop(
+              "BiocParallel NAMESPACEから",
+              "useDynLibを削除できませんでした。"
+            )
+          }
+
+          message(
+            "Removed useDynLib from BiocParallel NAMESPACE."
+          )
+
+          # --------------------------------------------------
+          # 5. Meta/nsInfo.rdsのdynamic library情報を削除
+          # --------------------------------------------------
+
+          ns_info <- readRDS(
+            nsinfo_path
+          )
+
+          message(
+            "Original nsInfo dynlibs:"
+          )
+
+          print(
+            ns_info$dynlibs
+          )
+
+          message(
+            "Original nsInfo nativeRoutines:"
+          )
+
+          print(
+            ns_info$nativeRoutines
+          )
+
+          ns_info$dynlibs <-
+            character()
+
+          ns_info$nativeRoutines <-
+            list()
+
+          saveRDS(
+            ns_info,
+            nsinfo_path,
+            version = 2
+          )
+
+          verified_ns_info <- readRDS(
+            nsinfo_path
+          )
+
+          if (
+            length(
+              verified_ns_info$dynlibs
+            ) != 0L
+          ) {
+            stop(
+              "BiocParallel nsInfo.rdsのdynlibsを",
+              "削除できませんでした。"
+            )
+          }
+
+          if (
+            length(
+              verified_ns_info$nativeRoutines
+            ) != 0L
+          ) {
+            stop(
+              "BiocParallel nsInfo.rdsのnativeRoutinesを",
+              "削除できませんでした。"
+            )
+          }
+
+          message(
+            "Removed dynlibs and nativeRoutines ",
+            "from BiocParallel nsInfo.rds."
+          )
+
+          # --------------------------------------------------
+          # 6. BiocParallelのネイティブライブラリを削除
+          # --------------------------------------------------
+
+          if (
+            dir.exists(
+              libs_path
+            )
+          ) {
+            message(
+              "Removing BiocParallel native library directory: ",
+              libs_path
+            )
+
+            unlink(
+              libs_path,
+              recursive = TRUE,
+              force = TRUE
+            )
+          }
+
+          if (
+            dir.exists(
+              libs_path
+            )
+          ) {
+            stop(
+              "BiocParallel libs directoryを",
+              "削除できませんでした。"
+            )
+          }
+
+          # --------------------------------------------------
+          # 7. BiocParallel tgzをserial-only版へ置換
+          # --------------------------------------------------
+
+          original_backup <- paste0(
+            biocparallel_binary,
+            ".native-backup"
+          )
+
+          if (
+            file.exists(
+              original_backup
+            )
+          ) {
+            unlink(
+              original_backup,
+              force = TRUE
+            )
+          }
+
+          rename_success <- file.rename(
+            biocparallel_binary,
+            original_backup
+          )
+
+          if (!rename_success) {
+            stop(
+              "Original BiocParallel binaryを",
+              "バックアップできませんでした。"
+            )
+          }
+
+          previous_working_directory <-
+            getwd()
+
+          tar_error <- NULL
+
+          tryCatch(
+            {
+              setwd(
+                extraction_dir
+              )
+
+              utils::tar(
+                tarfile =
+                  biocparallel_binary,
+                files =
+                  "BiocParallel",
+                compression =
+                  "gzip",
+                tar =
+                  "internal"
+              )
+            },
+            error = function(error) {
+              tar_error <<- error
+            },
+            finally = {
+              setwd(
+                previous_working_directory
+              )
+            }
+          )
+
+          if (
+            !is.null(
+              tar_error
+            )
+          ) {
+            stop(
+              "Patched BiocParallel binaryの作成に",
+              "失敗しました: ",
+              conditionMessage(
+                tar_error
+              )
+            )
+          }
+
+          if (
+            !file.exists(
+              biocparallel_binary
+            )
+          ) {
+            stop(
+              "Patched BiocParallel binaryが",
+              "作成されませんでした。"
+            )
+          }
+
+          message(
+            "Created serial-only BiocParallel binary: ",
+            biocparallel_binary
+          )
+
+          # --------------------------------------------------
+          # 8. 再作成したtgzを再展開して検証
+          # --------------------------------------------------
+
+          verification_dir <- file.path(
+            patch_dir,
+            "verification"
+          )
+
+          dir.create(
+            verification_dir,
+            recursive = TRUE,
+            showWarnings = FALSE
+          )
+
+          utils::untar(
+            biocparallel_binary,
+            exdir = verification_dir
+          )
+
+          verified_package_dir <- file.path(
+            verification_dir,
+            "BiocParallel"
+          )
+
+          verified_namespace_path <-
+            file.path(
+              verified_package_dir,
+              "NAMESPACE"
+            )
+
+          verified_nsinfo_path <-
+            file.path(
+              verified_package_dir,
+              "Meta",
+              "nsInfo.rds"
+            )
+
+          verified_libs_path <-
+            file.path(
+              verified_package_dir,
+              "libs"
+            )
+
+          if (
+            dir.exists(
+              verified_libs_path
+            )
+          ) {
+            stop(
+              "Patched BiocParallelにlibs directoryが",
+              "残っています。"
+            )
+          }
+
+          verified_namespace_lines <-
+            readLines(
+              verified_namespace_path,
+              warn = FALSE
+            )
+
+          if (
+            any(
+              grepl(
+                "^[[:space:]]*useDynLib[[:space:]]*\\(",
+                verified_namespace_lines
+              )
+            )
+          ) {
+            stop(
+              "Patched BiocParallel NAMESPACEに",
+              "useDynLibが残っています。"
+            )
+          }
+
+          final_ns_info <- readRDS(
+            verified_nsinfo_path
+          )
+
+          if (
+            length(
+              final_ns_info$dynlibs
+            ) != 0L
+          ) {
+            stop(
+              "Patched BiocParallel nsInfo.rdsに",
+              "dynlibsが残っています。"
+            )
+          }
+
+          if (
+            length(
+              final_ns_info$nativeRoutines
+            ) != 0L
+          ) {
+            stop(
+              "Patched BiocParallel nsInfo.rdsに",
+              "nativeRoutinesが残っています。"
+            )
+          }
+
+          message(
+            "Serial-only BiocParallel verification passed."
+          )
+
+          unlink(
+            original_backup,
+            force = TRUE
+          )
+
+          # --------------------------------------------------
+          # 9. ビルド済みpackage一覧を確認
           # --------------------------------------------------
 
           built_packages <- list.files(
@@ -133,7 +682,9 @@ jobs:
             full.names = TRUE
           )
 
-          message("Built package files:")
+          message(
+            "Built package files:"
+          )
 
           print(
             sort(
@@ -143,45 +694,67 @@ jobs:
             )
           )
 
-          locfit_files <- built_packages[
-            grepl(
-              "/locfit_[^/]+\\.tgz$",
-              built_packages
-            )
-          ]
+          required_package_names <- c(
+            "DESeq2",
+            "locfit",
+            "BiocParallel",
+            "BiocGenerics",
+            "S4Vectors",
+            "IRanges",
+            "XVector",
+            "S4Arrays",
+            "SparseArray",
+            "DelayedArray",
+            "Matrix",
+            "MatrixGenerics",
+            "Seqinfo",
+            "GenomicRanges",
+            "Biobase",
+            "SummarizedExperiment",
+            "matrixStats",
+            "Rcpp",
+            "RcppArmadillo",
+            "ggplot2"
+          )
 
-          deseq2_files <- built_packages[
-            grepl(
-              "/DESeq2_[^/]+\\.tgz$",
-              built_packages
-            )
-          ]
+          missing_package_binaries <-
+            required_package_names[
+              !vapply(
+                required_package_names,
+                function(package_name) {
+                  any(
+                    grepl(
+                      paste0(
+                        "^",
+                        package_name,
+                        "_.*\\.tgz$"
+                      ),
+                      basename(
+                        built_packages
+                      )
+                    )
+                  )
+                },
+                logical(1)
+              )
+            ]
 
           if (
-            length(locfit_files) == 0L
+            length(
+              missing_package_binaries
+            ) > 0L
           ) {
             stop(
-              "locfit was not built even after applying ",
-              "the C17 compiler configuration."
+              "Required package binaries are missing:\n",
+              paste(
+                missing_package_binaries,
+                collapse = "\n"
+              )
             )
           }
-
-          if (
-            length(deseq2_files) == 0L
-          ) {
-            stop(
-              "DESeq2 was not built."
-            )
-          }
-
-          message("Confirmed locfit:")
-          print(locfit_files)
-
-          message("Confirmed DESeq2:")
-          print(deseq2_files)
 
           # --------------------------------------------------
-          # filesystem imageを作成
+          # 10. filesystem imageを作成
           # --------------------------------------------------
 
           message(
@@ -226,16 +799,63 @@ jobs:
             ]
 
           if (
-            length(missing_image_files) > 0L
+            length(
+              missing_image_files
+            ) > 0L
           ) {
             stop(
-              "Missing filesystem image files: ",
+              "Missing filesystem image files:\n",
               paste(
                 missing_image_files,
-                collapse = ", "
+                collapse = "\n"
               )
             )
           }
+
+          build_information <- c(
+            paste0(
+              "Build date: ",
+              Sys.time()
+            ),
+            paste0(
+              "R version: ",
+              R.version.string
+            ),
+            paste0(
+              "DESeq2 binary: ",
+              basename(
+                deseq2_binary
+              )
+            ),
+            paste0(
+              "locfit binary: ",
+              basename(
+                locfit_binary
+              )
+            ),
+            paste0(
+              "BiocParallel binary: ",
+              basename(
+                biocparallel_binary
+              )
+            ),
+            paste0(
+              "BiocParallel version: ",
+              biocparallel_version
+            ),
+            "BiocParallel mode: serial-only",
+            "BiocParallel native libs: removed",
+            "BiocParallel NAMESPACE useDynLib: removed",
+            "BiocParallel Meta/nsInfo.rds dynlibs: removed"
+          )
+
+          writeLines(
+            build_information,
+            file.path(
+              image_dir,
+              "build-info.txt"
+            )
+          )
 
           message(
             "Filesystem image files:"
@@ -253,9 +873,22 @@ jobs:
               drop = FALSE
             ]
           )
+
+          message(
+            "Build information:"
+          )
+
+          writeLines(
+            build_information
+          )
+
+          message(
+            "DESeq2 webR library build completed successfully."
+          )
           RSCRIPT
 
       - name: Build DESeq2 and dependencies
+        shell: bash
         run: |
           docker run --rm \
             --entrypoint /bin/bash \
@@ -277,6 +910,7 @@ jobs:
                 )
               '"'"'
 
+              echo
               echo "Build environment:"
 
               R -q -e '"'"'
@@ -303,19 +937,45 @@ jobs:
                 )
               '"'"'
 
+              echo
+              echo "Starting DESeq2 build..."
+
               Rscript /work/build-deseq2.R
             '
 
-      - name: Inspect filesystem image
+      - name: Inspect built packages and image
+        shell: bash
         run: |
           set -euo pipefail
 
-          echo "Generated files:"
+          echo "Generated filesystem image files:"
 
           find wasm-library \
             -maxdepth 1 \
             -type f \
-            -printf '%f %s bytes\n'
+            -printf '%f %s bytes\n' \
+            | sort
+
+          echo
+          echo "Built package binaries:"
+
+          find wasm-repo \
+            -type f \
+            -name '*.tgz' \
+            -printf '%f\n' \
+            | sort
+
+          echo
+          echo "Checking required image files:"
+
+          test -s \
+            wasm-library/library.data.gz
+
+          test -s \
+            wasm-library/library.js.metadata
+
+          echo "Found library.data.gz"
+          echo "Found library.js.metadata"
 
           echo
           echo "Checking locfit:"
@@ -353,9 +1013,63 @@ jobs:
 
           echo "Found: ${DESEQ2_FILE}"
 
+          echo
+          echo "Checking serial-only BiocParallel:"
+
+          BIOCPARALLEL_FILE="$(
+            find wasm-repo \
+              -type f \
+              -name 'BiocParallel_*.tgz' \
+              -print \
+              -quit
+          )"
+
+          if [ -z "${BIOCPARALLEL_FILE}" ]; then
+            echo "ERROR: BiocParallel was not built"
+            exit 1
+          fi
+
+          echo "Found: ${BIOCPARALLEL_FILE}"
+
+          if \
+            tar -tzf "${BIOCPARALLEL_FILE}" \
+              | grep -q '^BiocParallel/libs/'
+          then
+            echo \
+              "ERROR: BiocParallel native libs are still present"
+            exit 1
+          fi
+
+          echo \
+            "OK: BiocParallel native libs are absent"
+
+          if \
+            tar -xOzf \
+              "${BIOCPARALLEL_FILE}" \
+              BiocParallel/NAMESPACE \
+              | grep -q 'useDynLib'
+          then
+            echo \
+              "ERROR: BiocParallel NAMESPACE still contains useDynLib"
+            exit 1
+          fi
+
+          echo \
+            "OK: BiocParallel NAMESPACE has no useDynLib"
+
+          echo
+          echo "Build information:"
+
+          cat \
+            wasm-library/build-info.txt
+
       - name: Upload filesystem image
         uses: actions/upload-artifact@v6
         with:
           name: deseq2-webr-library-${{ github.run_id }}-${{ github.run_attempt }}
-          path: wasm-library/
+          path: |
+            wasm-library/library.data.gz
+            wasm-library/library.js.metadata
+            wasm-library/build-info.txt
           if-no-files-found: error
+          retention-days: 14
