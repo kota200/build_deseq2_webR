@@ -1,4 +1,4 @@
-# Sakura webR + DESeq2
+# webR + DESeq2
 
 ## 1. Build the DESeq2 filesystem image
 
@@ -24,7 +24,7 @@ library.data.gz
 library.js.metadata
 ```
 
-## 2. Upload to Sakura
+## 2. Upload to server
 
 Upload the contents of this project to:
 
